@@ -271,7 +271,7 @@ int fork(void) {
 // Caller must hold p->lock.
 void reparent(struct proc *p) {
   struct proc *pp;
-
+  int child_cnt = 0;
   for (pp = proc; pp < &proc[NPROC]; pp++) {
     // this code uses pp->parent without holding pp->lock.
     // acquiring the lock first could cause a deadlock
@@ -281,12 +281,15 @@ void reparent(struct proc *p) {
       // pp->parent can't change between the check and the acquire()
       // because only the parent changes it, and we're the parent.
       acquire(&pp->lock);
+      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n",
+            p->pid, child_cnt,pp->pid, pp->name, procstate_to_string(pp->state));
       pp->parent = initproc;
       // we should wake up init here, but that would require
       // initproc->lock, which would be a deadlock, since we hold
       // the lock on one of init's children (pp). this is why
       // exit() always wakes init (before acquiring any locks).
       release(&pp->lock);
+      child_cnt++;
     }
   }
 }
@@ -332,10 +335,12 @@ void exit(int status) {
   struct proc *original_parent = p->parent;
   release(&p->lock);
 
+  
   // we need the parent's lock in order to wake it up from wait().
   // the parent-then-child rule says we have to lock it first.
   acquire(&original_parent->lock);
-
+  exit_info("proc %d exit, parent pid %d, name %s, state %s\n",
+            p->pid, original_parent->pid, original_parent->name, procstate_to_string(original_parent->state));
   acquire(&p->lock);
 
   // Give any children to init.
@@ -356,7 +361,7 @@ void exit(int status) {
 
 // Wait for a child process to exit and return its pid.
 // Return -1 if this process has no children.
-int wait(uint64 addr) {
+int wait(uint64 addr,int flags) {
   struct proc *np;
   int havekids, pid;
   struct proc *p = myproc();
@@ -395,7 +400,7 @@ int wait(uint64 addr) {
     }
 
     // No point waiting if we don't have any children.
-    if (!havekids || p->killed) {
+    if (!havekids || p->killed || flags == 1) {
       release(&p->lock);
       return -1;
     }
@@ -422,7 +427,7 @@ void scheduler(void) {
     intr_on();
 
     int found = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
+  for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if (p->state == RUNNABLE) {
         // Switch to chosen process.  It is the process's job

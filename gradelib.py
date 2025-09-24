@@ -224,7 +224,10 @@ def make(*target):
     post_make()
 
 def show_command(cmd):
-    from pipes import quote
+    #from pipes import quote
+    #
+    import shlex
+    quote = shlex.quote
     print("\n$", " ".join(map(quote, cmd)))
 
 def maybe_unlink(*paths):

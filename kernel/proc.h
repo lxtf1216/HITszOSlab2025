@@ -82,6 +82,17 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+static inline const char* procstate_to_string(enum procstate state) {
+    switch (state) {
+        case UNUSED:   return "unused";
+        case SLEEPING: return "sleeping";
+        case RUNNABLE: return "runnable";
+        case RUNNING:  return "running";
+        case ZOMBIE:   return "zombie";
+        default:       return "unknown";
+    }
+}
+
 // Per-process state
 struct proc {
   struct spinlock lock;
