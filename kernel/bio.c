@@ -37,8 +37,8 @@ struct {
   struct buf_buc buckets[mod];
 } bcache;
 
-uint hash(uint blockno) {
-  return blockno%mod;
+uint hash(uint dev,uint blockno) {
+  return (dev*43+blockno)%mod;
 }
 static char buclock_name[16];
 void
@@ -69,10 +69,10 @@ binit(void)
     initsleeplock(&b->lock,"buffer");
      b->refcnt = 0;
      b->valid = 0;
-     b->dev = -1;
+     b->dev = 0;
      b->blockno = 0;
     struct buf_buc *buc = &(bcache.buckets[0]);
-    //开局直接全部丢到0桶
+    //all in 1 bucket initially(like buc0)
     b->next = (buc->head).next;
     b->prev = &(buc->head);
     ((buc->head).next)->prev = b;
@@ -83,6 +83,7 @@ binit(void)
 // helper functions 
 static void 
 remove_from_bucket(struct buf *b) {
+  //if b not in a buc , it is safe .
   b->next->prev = b->prev;
   b->prev->next = b->next;
   b->prev = b->next = 0;
@@ -95,6 +96,15 @@ insert_into_bucket(struct buf *b,int buc_id) {
   buc->head.next->prev = b;
   buc->head.next = b;
 }
+static void
+initbuf(struct buf *b,int dev,int blockno) {
+  b->dev = dev;
+  b->blockno = blockno;
+  b->refcnt = 1;
+  b->valid = 0;
+}
+//helper function end 
+
 // Look through buffer cache for block on device dev.
 // If not found, allocate a buffer.
 // In either case, return locked buffer.
@@ -104,7 +114,7 @@ bget(uint dev, uint blockno)
  // printf("bget:%d %d\n",dev,blockno);
   struct buf *b;
 
-  int id = hash(blockno);
+  int id = hash(dev,blockno);
   struct buf_buc *buc = &(bcache.buckets[id]);
   acquire(&(buc->lock));
 
@@ -117,6 +127,8 @@ bget(uint dev, uint blockno)
       return b;
     }
   }
+
+  //find in same bucket first 
   uint min_time = 0xffffffff;
   struct buf *replace = 0;
   
@@ -128,45 +140,47 @@ bget(uint dev, uint blockno)
   }
 
   if(replace) {
-    goto find;
+    initbuf(replace,dev,blockno);
+    release(&(buc->lock));
+    acquiresleep(&(replace->lock));
+    return replace;
   }
 
-
+ //find in another bucket
   acquire(&bcache.lock);
-  refind:
-  replace = 0;
-  min_time = 0xffffffff;
-  for(b=bcache.buf;b<bcache.buf + NBUF;b++) {
-    if(b->refcnt == 0 && b->timestamp < min_time) {
-      replace = b;
-      min_time = b->timestamp;
+  while(1) {
+    replace = 0;
+    min_time = 0xffffffff;
+    for(b=bcache.buf;b<bcache.buf + NBUF;b++) {
+      if(b->refcnt == 0 && b->timestamp < min_time) {
+        replace = b;
+        min_time = b->timestamp;
+      }
     }
-  }
 
-  if(replace) {
-    int rid = hash(replace->blockno);
-    acquire(&(bcache.buckets[rid].lock));
-    if(replace->refcnt !=0) {
+    if(replace) {
+      int rid = hash(replace->dev,replace->blockno);
+      acquire(&(bcache.buckets[rid].lock));
+
+      //NOTICE!!! check again for another process use replace !!! 
+      if(replace->refcnt !=0) {
+        release(&(bcache.buckets[rid].lock));
+        continue ;
+      }
+
+      remove_from_bucket(replace);
+
       release(&(bcache.buckets[rid].lock));
-      goto refind;
-    }
 
-    remove_from_bucket(replace);
+      insert_into_bucket(replace,id);
 
-    release(&(bcache.buckets[rid].lock));
-
-    insert_into_bucket(replace,id);
-
-    release(&(bcache.lock));
-    goto find;
-  } else panic("bget: no buffers");
-  find:
-  replace->dev = dev;
-  replace->blockno = blockno;
-  replace->valid = 0;
-  replace->refcnt = 1;
-  release(&(buc->lock));
-  acquiresleep(&(replace->lock));
+      release(&(bcache.lock));
+      initbuf(replace,dev,blockno);
+      release(&(buc->lock));
+      acquiresleep(&(replace->lock));
+      return replace;
+    } else panic("bget: no buffers");
+  }
   return replace;
 }
 
@@ -203,21 +217,16 @@ brelse(struct buf *b)
   //printf("brelse %d %d\n",b->dev,b->blockno);
   releasesleep(&b->lock);
 
-  int buc_id = hash(b->blockno);
-  struct buf_buc *buc = &(bcache.buckets[buc_id]);
-
-  acquire(&(buc->lock));
   b->refcnt--;
   if (b->refcnt == 0) {
     // no one is waiting for it.
     b->timestamp = ticks;
   }
-  release(&(buc->lock));
 }
 
 void
 bpin(struct buf *b) {
-  int buc_id = hash(b->blockno);
+  int buc_id = hash(b->dev,b->blockno);
   acquire(&bcache.buckets[buc_id].lock);
   b->refcnt++;
   release(&bcache.buckets[buc_id].lock);
@@ -225,7 +234,7 @@ bpin(struct buf *b) {
 
 void
 bunpin(struct buf *b) {
-  int buc_id = hash(b->blockno);
+  int buc_id = hash(b->dev,b->blockno);
   acquire(&bcache.buckets[buc_id].lock);
   b->refcnt--;
   release(&bcache.buckets[buc_id].lock);
