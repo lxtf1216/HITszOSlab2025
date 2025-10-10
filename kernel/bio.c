@@ -69,14 +69,16 @@ binit(void)
     initsleeplock(&b->lock,"buffer");
      b->refcnt = 0;
      b->valid = 0;
-     b->dev = -1;
+     b->dev = 0;
      b->blockno = 0;
-    struct buf_buc *buc = &(bcache.buckets[0]);
-    //开局直接全部丢到0桶
-    b->next = (buc->head).next;
-    b->prev = &(buc->head);
-    ((buc->head).next)->prev = b;
-    (buc->head).next = b;
+    // struct buf_buc *buc = &(bcache.buckets[0]);
+    // //开局直接全部丢到0桶
+    // b->next = (buc->head).next;
+    // b->prev = &(buc->head);
+    // ((buc->head).next)->prev = b;
+    // (buc->head).next = b;
+     b->next = 0 ;
+     b->prev = 0 ;
   }
 }
 
@@ -98,66 +100,145 @@ insert_into_bucket(struct buf *b,int buc_id) {
 // Look through buffer cache for block on device dev.
 // If not found, allocate a buffer.
 // In either case, return locked buffer.
+// static struct buf*
+// bget(uint dev, uint blockno)
+// {
+//   struct buf *b;
+//   int id = hash(blockno);
+//   struct buf_buc *buc = &(bcache.buckets[id]);
+//   acquire(&(buc->lock));
+
+//   // Is the block already cached?
+//   for(b = (buc->head).next; b != &(buc->head); b = b->next){
+//     if(b->dev == dev && b->blockno == blockno){
+//       b->refcnt++;
+//       release(&(buc->lock));
+//       acquiresleep(&b->lock);
+//       return b;
+//     }
+//   }
+//   release(&(buc->lock));
+
+//   acquire(&bcache.lock);
+//   for(b = bcache.buf; b < bcache.buf + NBUF; b++){
+//     if(b->refcnt == 0) {
+//       int oth_id = hash(b->blockno);
+//       int mn = oth_id < id ? oth_id : id;
+//       int mx = oth_id < id ? id : oth_id; 
+
+//       //NOTICE!!! avoid deadlock
+//       acquire(&bcache.buckets[mn].lock);
+//       if (mn != mx)
+//         acquire(&bcache.buckets[mx].lock);
+
+//       if(b->refcnt == 0){
+//         //maybe useless if
+//         if(b->next || b->prev){
+//           remove_from_bucket(b);
+//         }
+//         b->dev = dev;
+//         b->blockno = blockno;
+//         b->valid = 0;
+//         b->refcnt = 1;
+//         insert_into_bucket(b, id);
+
+//         if (mn != mx)
+//         release(&bcache.buckets[mx].lock);
+//         release(&bcache.buckets[mn].lock);
+
+
+//         release(&bcache.lock);
+
+
+//         acquiresleep(&b->lock);
+//         return b;
+//       }
+//       release(&bcache.buckets[mx].lock);
+//       if (mn != mx){
+//         release(&bcache.buckets[mn].lock);  
+//       }
+//     }
+//   }
+//   release(&bcache.lock);
+//   panic("bget: no buffers");
+// }
 static struct buf*
 bget(uint dev, uint blockno)
 {
   struct buf *b;
-  int id = hash(blockno);
-  struct buf_buc *buc = &(bcache.buckets[id]);
-  acquire(&(buc->lock));
+  int target_id = hash(blockno);
+  struct buf_buc *target_buc = &(bcache.buckets[target_id]);
 
-  // Is the block already cached?
-  for(b = (buc->head).next; b != &(buc->head); b = b->next){
+  // Phase 1: Check if block is already cached in target bucket
+  acquire(&target_buc->lock);
+  for(b = target_buc->head.next; b != &target_buc->head; b = b->next){
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
-      release(&(buc->lock));
+      release(&target_buc->lock);
       acquiresleep(&b->lock);
       return b;
     }
   }
-  release(&(buc->lock));
+  release(&target_buc->lock);
 
+  // Phase 2: Not cached, need to find an unused buffer
+  // Strategy: acquire bcache.lock first to scan for unused buffers
+  // This ensures consistent lock ordering: bcache.lock -> bucket locks
+  
   acquire(&bcache.lock);
+  
+  // Scan all buffers to find one with refcnt == 0
   for(b = bcache.buf; b < bcache.buf + NBUF; b++){
     if(b->refcnt == 0) {
-      int oth_id = hash(b->blockno);
-      int mn = oth_id < id ? oth_id : id;
-      int mx = oth_id < id ? id : oth_id; 
-
-      //NOTICE!!! avoid deadlock
-      acquire(&bcache.buckets[mn].lock);
-      if (mn != mx)
-        acquire(&bcache.buckets[mx].lock);
-
-      if(b->refcnt == 0){
-        //maybe useless if
-        if(b->next || b->prev){
+      // Found a candidate buffer
+      int old_id = hash(b->blockno);
+      
+      // Determine lock acquisition order to prevent deadlock
+      // Always acquire locks in ascending bucket ID order
+      int first_id = (old_id < target_id) ? old_id : target_id;
+      int second_id = (old_id < target_id) ? target_id : old_id;
+      
+      // Acquire bucket locks in order
+      acquire(&bcache.buckets[first_id].lock);
+      if(first_id != second_id) {
+        acquire(&bcache.buckets[second_id].lock);
+      }
+      
+      // Double-check refcnt hasn't changed (defensive programming)
+      if(b->refcnt == 0) {
+        // Remove from old bucket if it's in one
+        if(b->next != 0 && b->prev != 0) {
           remove_from_bucket(b);
         }
+        
+        // Initialize buffer for new block
         b->dev = dev;
         b->blockno = blockno;
         b->valid = 0;
         b->refcnt = 1;
-        insert_into_bucket(b, id);
-
-        if (mn != mx)
-        release(&bcache.buckets[mx].lock);
-        release(&bcache.buckets[mn].lock);
-
-
+        
+        // Insert into target bucket
+        insert_into_bucket(b, target_id);
+        
+        // Release all locks in reverse order
+        if(first_id != second_id) {
+          release(&bcache.buckets[second_id].lock);
+        }
+        release(&bcache.buckets[first_id].lock);
         release(&bcache.lock);
-
-
+        
         acquiresleep(&b->lock);
         return b;
       }
-
-      if (mn != mx){
-        release(&bcache.buckets[mx].lock);
-        release(&bcache.buckets[mn].lock);
+      
+      // refcnt changed, release locks and continue searching
+      if(first_id != second_id) {
+        release(&bcache.buckets[second_id].lock);
       }
+      release(&bcache.buckets[first_id].lock);
     }
   }
+  
   release(&bcache.lock);
   panic("bget: no buffers");
 }
@@ -193,12 +274,17 @@ brelse(struct buf *b)
   if(!holdingsleep(&b->lock))
     panic("brelse");
 
-  releasesleep(&b->lock);
-
-  int buc_id = hash(b->blockno);
+  uint saved_blockno = b->blockno;
+  uint saved_dev = b->dev;
+  int buc_id = hash(saved_blockno);
   struct buf_buc *buc = &(bcache.buckets[buc_id]);
 
   acquire(&(buc->lock));
+  if(b->blockno != saved_blockno || b->dev != saved_dev) {
+    release(&buc->lock);
+    panic("brelse: buffer metadata changed");
+  }
+  releasesleep(&b->lock);
   b->refcnt--;
   if (b->refcnt == 0) {
     // no one is waiting for it.
