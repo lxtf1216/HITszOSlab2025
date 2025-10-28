@@ -32,8 +32,6 @@ struct {
   struct buf buf[NBUF];
 
   // Linked list of all buffers, through prev/next.
-  // Sorted by how recently the buffer was used.
-  // head.next is most recent, head.prev is least.
   struct buf_buc buckets[mod];
 } bcache;
 
@@ -47,17 +45,7 @@ binit(void)
   struct buf *b;
 
   initlock(&bcache.lock, "bcache");
-
-  // // Create linked list of buffers
-  // bcache.head.prev = &bcache.head;
-  // bcache.head.next = &bcache.head;
-  // for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-  //   b->next = bcache.head.next;
-  //   b->prev = &bcache.head;
-  //   initsleeplock(&b->lock, "buffer");
-  //   bcache.head.next->prev = b;
-  //   bcache.head.next = b;
-  // }
+  
   for(int i = 0 ;i < mod ;++i) {
     snprintf(buclock_name,sizeof(buclock_name),"bcache_bucket%02d",i);
     initlock(&bcache.buckets[i].lock, buclock_name);
@@ -111,7 +99,6 @@ initbuf(struct buf *b,int dev,int blockno) {
 static struct buf*
 bget(uint dev, uint blockno)
 {
- // printf("bget:%d %d\n",dev,blockno);
   struct buf *b;
 
   int id = hash(dev,blockno);
@@ -208,7 +195,6 @@ bwrite(struct buf *b)
 }
 
 // Release a locked buffer.
-// Move to the head of the most-recently-used list.
 void
 brelse(struct buf *b)
 {
