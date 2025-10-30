@@ -379,16 +379,42 @@ int test_pagetable() {
   printf("test_pagetable: %d\n", satp != gsatp);
   return satp != gsatp;
 }
-void vmprint(pagetable_t pagetable) {
-  for (int i = 0; i < 512; i++) {
-    pte_t pte = pagetable[i];
-    if (pte & PTE_V) {
-      uint64 va = i * PGSIZE;
-      uint64 pa = PTE2PA(pte);
-      printf("VA: 0x%p -> PA: 0x%p PTE: 0x%p\n", va, pa, pte);
-      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
-        vmprint((pagetable_t)pa);
+static void 
+print_flags(pte_t pte) {
+  char flag[5] = "----";
+  flag[0] = ((pte & PTE_R) ? 'r' : '-' );
+  flag[1] = ((pte & PTE_W) ? 'w' : '-');
+  flag[2] = ((pte & PTE_X) ? 'x' : '-');
+  flag[3] = ((pte & PTE_U) ? 'u' : '-');
+  printf("%s",flag);
+}
+static void
+vmprint_rec(pagetable_t pagetable,int dep,uint64 vmbase) {
+    for(int i=0;i<512;++i) {
+      pte_t pte = pagetable[i];
+      if(pte & PTE_V) {
+        int d;
+        printf("||");
+        for(d = 1; d < dep; d++) {
+          printf("   ||");
+        }
+        printf("idx: %d: ",i);
+        int shift = 12 + 9*(2-dep);
+        int now_vm = vmbase | (i<<shift);
+        if(dep<2) {
+            printf("pa: %p, flags: ",PTE2PA(pte));
+            print_flags(pte);
+            printf("\n");
+            vmprint_rec((pagetable_t)PTE2PA(pte),dep+1,now_vm);
+        } else {
+            printf("va: %p -> pa: %p, flags: ",now_vm,PTE2PA(pte));
+            print_flags(pte);
+            printf("\n");
+        }
       }
     }
-  }
+}
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n",pagetable);
+  vmprint_rec(pagetable,0,0);
 }
