@@ -379,3 +379,16 @@ int test_pagetable() {
   printf("test_pagetable: %d\n", satp != gsatp);
   return satp != gsatp;
 }
+void vmprint(pagetable_t pagetable) {
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if (pte & PTE_V) {
+      uint64 va = i * PGSIZE;
+      uint64 pa = PTE2PA(pte);
+      printf("VA: 0x%p -> PA: 0x%p PTE: 0x%p\n", va, pa, pte);
+      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        vmprint((pagetable_t)pa);
+      }
+    }
+  }
+}
