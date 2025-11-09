@@ -395,7 +395,7 @@ vmprint_rec(pagetable_t pagetable,int dep,uint64 vmbase) {
       if(pte & PTE_V) {
         int d;
         printf("||");
-        for(d = 1; d < dep; d++) {
+        for(d = 0; d < dep; d++) {
           printf("   ||");
         }
         printf("idx: %d: ",i);
