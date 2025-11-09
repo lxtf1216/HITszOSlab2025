@@ -400,12 +400,12 @@ vmprint_rec(pagetable_t pagetable,int dep,uint64 vmbase) {
         }
         printf("idx: %d: ",i);
         int shift = 12 + 9*(2-dep);
-        int now_vm = vmbase | (i<<shift);
+        uint64 now_vm = vmbase | (((uint64)i)<<shift);
         if(dep<2) {
             printf("pa: %p, flags: ",PTE2PA(pte));
             print_flags(pte);
             printf("\n");
-            vmprint_rec((pagetable_t)PTE2PA(pte),dep+1,now_vm);
+            vmprint_rec((pagetable_t)((uint64)PTE2PA(pte)),dep+1,now_vm);
         } else {
             printf("va: %p -> pa: %p, flags: ",now_vm,PTE2PA(pte));
             print_flags(pte);
