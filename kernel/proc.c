@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+extern pagetable_t kernel_pagetable;
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -35,8 +37,9 @@ void procinit(void) {
     char *pa = kalloc();
     if (pa == 0) panic("kalloc");
     uint64 va = KSTACK((int)(p - proc));
-    kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+    //kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
     p->kstack = va;
+    p->kstack_pa = (uint64)pa;
   }
   kvminithart();
 }
@@ -97,6 +100,14 @@ static struct proc *allocproc(void) {
 found:
   p->pid = allocpid();
 
+  // create kpgtbl
+  p->k_pagetable = createkernelpagetable();
+  if (p->k_pagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  kvmmap(p->k_pagetable,p->kstack,p->kstack_pa,PGSIZE,PTE_R|PTE_W);
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
     release(&p->lock);
@@ -136,6 +147,10 @@ static void freeproc(struct proc *p) {
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  if(p->k_pagetable) {
+    free_kpagetable(p->k_pagetable);
+    p->k_pagetable = 0;
+  }
 }
 
 // Create a user page table for a given process,
@@ -193,6 +208,8 @@ void userinit(void) {
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  sync_pagetable(p->pagetable, p->k_pagetable,0,p->sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -213,11 +230,18 @@ int growproc(int n) {
 
   sz = p->sz;
   if (n > 0) {
-    if ((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    uint64 newsz;
+    if ((newsz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    if(sync_pagetable(p->pagetable, p->k_pagetable,sz,n) != 0){
+      uvmdealloc(p->pagetable, newsz, sz);
+      return -1;
+    }
+    sz = newsz;
   } else if (n < 0) {
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uvmdealloc(p->pagetable, sz, sz + n);
+    sz = kvmdealloc(p->k_pagetable, sz, sz+n);
   }
   p->sz = sz;
   return 0;
@@ -236,7 +260,7 @@ int fork(void) {
   }
 
   // Copy user memory from parent to child.
-  if (uvmcopy(p->pagetable, np->pagetable, p->sz) < 0) {
+  if (uvmcopy(p->pagetable, np->pagetable, p->sz) < 0 || sync_pagetable(np->pagetable,np->k_pagetable,0,p->sz) < 0) {
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -425,6 +449,9 @@ void scheduler(void) {
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if (p->state == RUNNABLE) {
+        // switch to this process's kernel pagetable
+        w_satp(MAKE_SATP(p->k_pagetable));
+        sfence_vma();
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
@@ -432,6 +459,9 @@ void scheduler(void) {
         c->proc = p;
         swtch(&c->context, &p->context);
 
+        // resume kernel pagetable
+        w_satp(MAKE_SATP(kernel_pagetable));
+        sfence_vma();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;

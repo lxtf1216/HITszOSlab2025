@@ -89,6 +89,9 @@ int exec(char *path, char **argv) {
     if (*s == '/') last = s + 1;
   safestrcpy(p->name, last, sizeof(p->name));
 
+  uvmunmap(p->k_pagetable,0,PGROUNDUP(oldsz)/PGSIZE,0);
+  sync_pagetable(pagetable,p->k_pagetable,0,sz);
+
   // Commit to the user image.
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
